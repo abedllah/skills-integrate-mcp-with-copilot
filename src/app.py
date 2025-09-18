@@ -5,14 +5,54 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import os
+import json
 from pathlib import Path
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
+
+# Security
+security = HTTPBearer()
+
+# Load teacher credentials
+def load_teacher_credentials():
+    try:
+        with open(os.path.join(Path(__file__).parent, "teachers.json"), "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"teachers": {}}
+
+def verify_teacher_credentials(username: str, password: str) -> bool:
+    """Verify if the provided credentials are valid for a teacher"""
+    credentials = load_teacher_credentials()
+    return credentials.get("teachers", {}).get(username) == password
+
+def get_current_teacher(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Dependency to verify teacher authentication"""
+    # For simplicity, we'll use the token as "username:password" encoded
+    try:
+        import base64
+        decoded = base64.b64decode(credentials.credentials).decode()
+        username, password = decoded.split(":", 1)
+        if verify_teacher_credentials(username, password):
+            return username
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
@@ -88,9 +128,24 @@ def get_activities():
     return activities
 
 
+@app.post("/login")
+def login(username: str, password: str):
+    """Login endpoint for teachers"""
+    if verify_teacher_credentials(username, password):
+        # Create a simple token (username:password encoded in base64)
+        import base64
+        token = base64.b64encode(f"{username}:{password}".encode()).decode()
+        return {"token": token, "message": "Login successful"}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials"
+        )
+
+
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
+def signup_for_activity(activity_name: str, email: str, teacher: str = Depends(get_current_teacher)):
+    """Sign up a student for an activity (teachers only)"""
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,8 +166,8 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, teacher: str = Depends(get_current_teacher)):
+    """Unregister a student from an activity (teachers only)"""
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
